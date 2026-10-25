@@ -28,3 +28,4 @@ my_dict = {"alice": 30, "bob": 25, "charlie": 35}      # Dictionary
 # TODO: Print keys, values, key-value pairs.
 print(my_dict.keys(), my_dict.values(), my_dict.items())
 print(my_dict["alice"])  # Accessing value by key
+# PIMMMELLL
