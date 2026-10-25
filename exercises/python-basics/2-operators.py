@@ -7,15 +7,15 @@ a = 10
 b = 5.5
 
 # TODO: Write an addition operation using the above variables.
-addition = ...
+addition = a+b
 print(addition)
 
 # TODO: Write a subtraction operation using the above variables.
-subtraction = ...
+subtraction = a-b
 print(subtraction)
 
 # TODO: Write a multiplication operation using the above variables.
-multiplication = ...
+multiplication = a*b
 print(multiplication)
 
 # ----------------------------------------------
@@ -28,20 +28,20 @@ x = 100
 y = 100
 
 # TODO: Write an equal to comparison using the above variables.
-equal = ...
-print(equal)
+equal = a==b
+print("is equal to", equal)
 
 # TODO: Write a not equal to comparison using the above variables.
-not_equal = ...
-print(not_equal)
+not_equal = a!=b
+print("is not equal to", not_equal)
 
 # TODO: Write a greater than comparison using the above variables.
-greater_than = ...
-print(greater_than)
+greater_than = a>b
+print("is greater than", greater_than)
 
 # TODO: Write a less than or equal to comparison using the above variables.
-less_or_equal = ...
-print(less_or_equal)
+less_or_equal = a<=b
+print("is less than or equal to", less_or_equal)
 
 # ----------------------------------------------
 
@@ -50,15 +50,15 @@ print(less_or_equal)
 # Logical operators are used to combine conditional statements. The result of a logical operation is a Boolean value (True or False).
 
 # TODO: Write a logical AND operation using True and False.
-logical_and = ...
+logical_and = True and False
 print(logical_and)
 
 # TODO: Write a logical OR operation using True and False.
-logical_or = ...
+logical_or = True or False
 print(logical_or)
 
 # TODO: Write a logical NOT operation using True.
-logical_not = ...
+logical_not = not True
 print(logical_not)
 
 # ----------------------------------------------
@@ -70,11 +70,11 @@ a = 1
 b = 20
 
 # TODO: Write an IS identity comparison using the above variables.
-is_same = ...
+is_same = a is b
 print(is_same)
 
 # TODO: Write a IS NOT identity comparison using the above variables.
-is_not_same = ...
+is_not_same = a is not b
 print(is_not_same)
 
 # ----------------------------------------------
