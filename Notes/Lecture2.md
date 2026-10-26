@@ -96,3 +96,10 @@ preserve parallelism between lines.
 
 Are non Commutative : A x B 'not equal to' B x A
 
+
+
+## Py3 into Rhino
+- input an doutput names of py have to match the node names
+- type hint je nach container angeben (rechtsklick, dann type hint z.B.: Point3d)
+
+
