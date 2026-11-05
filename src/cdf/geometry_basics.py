@@ -134,6 +134,75 @@ def create_container(container_type=0, size=30.0, height=30.0):
         joined = rg.Brep.JoinBreps([base_face, side1, side2, side3, side4], 0.001)
         return joined[0]
 
+def create_hollow_container(
+        container_type=0, size=30.0, height=30.0, wall_thickness=1.0):
+    """Build a closed hollow box, cylinder, or four-sided pyramid as a Brep.
+
+    The inner cavity matches the original container dimensions. The outer
+    shell grows outward from that boundary.
+    """
+    c_type = int(container_type)
+    if c_type not in (0, 1, 2):
+        raise ValueError("container_type must be 0, 1, or 2.")
+    if size <= 0 or height <= 0:
+        raise ValueError("size and height must be positive.")
+    if wall_thickness <= 0:
+        raise ValueError("wall_thickness must be positive.")
+
+    half = size / 2.0
+    thickness = float(wall_thickness)
+
+    if c_type == 0:
+        outer = rg.Box(
+            rg.Plane.WorldXY,
+            rg.Interval(-half - thickness, half + thickness),
+            rg.Interval(-half - thickness, half + thickness),
+            rg.Interval(-thickness, height + thickness)
+        ).ToBrep()
+        inner = rg.Box(
+            rg.Plane.WorldXY,
+            rg.Interval(-half, half),
+            rg.Interval(-half, half),
+            rg.Interval(0.0, height)
+        ).ToBrep()
+    elif c_type == 1:
+        outer_plane = rg.Plane(
+            rg.Point3d(0.0, 0.0, -thickness), rg.Vector3d.ZAxis)
+        outer = rg.Cylinder(
+            rg.Circle(outer_plane, half + thickness),
+            height + 2.0 * thickness
+        ).ToBrep(True, True)
+        inner = rg.Cylinder(
+            rg.Circle(rg.Plane.WorldXY, half), height
+        ).ToBrep(True, True)
+    else:
+        inner = create_container(2, size, height)
+        outer_half = (
+            half * (height + 2.0 * thickness) / (height + thickness)
+            + thickness
+        )
+        outer = create_container(
+            2, 2.0 * outer_half, height + 2.0 * thickness)
+        if not outer.Transform(
+                rg.Transform.Translation(0.0, 0.0, -thickness)):
+            raise RuntimeError("Could not move the outer pyramid shell.")
+
+    inner.Flip()
+    outer.Append(inner)
+
+    if not outer.IsValid or not outer.IsSolid:
+        raise RuntimeError(
+            "The hollow container did not create a valid solid Brep.")
+
+    return outer
+
+
+def create_hollow_box_container(
+        size=30.0, height=30.0, wall_thickness=1.0, container_type=0):
+    """Backward-compatible wrapper for the hollow container function."""
+    return create_hollow_container(
+        container_type, size, height, wall_thickness)
+
 def pack_gravity_spheres(container_type=0, size=30.0, height=30.0,
                          count=15, min_radius=2.0, max_radius=5.0, seed=42):
     c_type = int(container_type)
@@ -216,23 +285,156 @@ def pack_gravity_spheres(container_type=0, size=30.0, height=30.0,
 
     return planes, radii
 
-def create_box_inside_sphere(plane, radius):
-    half_side = radius / math.sqrt(3.0)
-
-    box = rg.Box(
-        plane,
-        rg.Interval(-half_side, half_side),
-        rg.Interval(-half_side, half_side),
-        rg.Interval(-half_side, half_side)
-    )
-    return box.ToBrep()
-
-def populate_shapes(planes, radii):
+def perforate_spheres(planes, radii, seed=42):
     shapes = []
+    rng = random.Random(seed)
+    extra_length = 1.0
 
-    for plane, radius in zip(planes, radii):
-        shape = create_box_inside_sphere(plane, radius)
-        shapes.append(shape)
+    for index, (plane, radius) in enumerate(zip(planes, radii)):
+        sphere = create_sphere(plane, radius)
+        if index % 2 == 0:
+            shapes.append(sphere)
+            continue
+        hole_diameter_ratio = rng.uniform(0.5, 1.0)
+
+        angle = rng.uniform(0.0, 2.0 * math.pi)
+        direction_z = rng.uniform(-1.0, 1.0)
+        direction_xy = math.sqrt(1.0 - direction_z * direction_z)
+
+        axis = rg.Vector3d(
+                direction_xy * math.cos(angle),
+                direction_xy * math.sin(angle),
+                direction_z
+        )
+
+        cutter_radius = radius * hole_diameter_ratio / 2.0
+        cutter_length = 2.0 * radius + 2.0 * extra_length
+        cutter_start = plane.Origin - axis * (radius + extra_length)
+        cutter_plane = rg.Plane(cutter_start, axis)
+
+        cutter_type = rng.choice(("cylinder", "box"))
+
+        if cutter_type == "cylinder":
+            cutter_circle = rg.Circle(cutter_plane, cutter_radius)
+            cutter = rg.Cylinder(
+                cutter_circle,
+                cutter_length
+            ).ToBrep(True, True)
+        else:
+            cutter_box = rg.Box(
+                cutter_plane,
+                rg.Interval(-cutter_radius, cutter_radius),
+                rg.Interval(-cutter_radius, cutter_radius),
+                rg.Interval(0.0, cutter_length)
+            )
+            cutter = cutter_box.ToBrep()
+
+        result = boolean_difference(sphere, cutter)
+
+        if not result:
+            raise RuntimeError("Boolean cut failed for a sphere.")
+
+        shapes.extend(result)
 
     return shapes
 
+def bake_brep_with_material(
+        brep, material_name, rgb, roughness=0.5, opacity=1.0):
+    import System
+    import Rhino
+    import Rhino.DocObjects as rd
+    from System.Drawing import Color
+
+    if brep is None:
+        raise ValueError("brep must be provided.")
+    if len(rgb) != 3 or any(value < 0 or value > 255 for value in rgb):
+        raise ValueError("rgb must contain three values from 0 to 255.")
+    if not 0.0 <= roughness <= 1.0:
+        raise ValueError("roughness must be between 0.0 and 1.0.")
+    if not 0.0 <= opacity <= 1.0:
+        raise ValueError("opacity must be between 0.0 and 1.0.")
+
+    doc = Rhino.RhinoDoc.ActiveDoc
+    if doc is None:
+        raise RuntimeError("No active Rhino document.")
+
+    material_index = doc.Materials.Find(material_name, True)
+
+    if material_index >= 0:
+        material = rd.Material(doc.Materials[material_index])
+    else:
+        material = rd.Material()
+        material.Name = material_name
+
+    material.DiffuseColor = Color.FromArgb(
+        int(rgb[0]), int(rgb[1]), int(rgb[2])
+    )
+    material.Shine = (1.0 - roughness) * rd.Material.MaxShine
+    material.Transparency = 1.0 - opacity
+
+    if material_index >= 0:
+        if not doc.Materials.Modify(material, material_index, True):
+            raise RuntimeError("Could not update the Rhino material.")
+    else:
+        material_index = doc.Materials.Add(material)
+        if material_index < 0:
+            raise RuntimeError("Could not add the Rhino material.")
+
+    attributes = rd.ObjectAttributes()
+    attributes.MaterialSource = rd.ObjectMaterialSource.MaterialFromObject
+    attributes.MaterialIndex = material_index
+
+    object_id = doc.Objects.AddBrep(brep, attributes)
+    if object_id == System.Guid.Empty:
+        raise RuntimeError("Could not add the Brep to the Rhino document.")
+
+    return object_id
+
+def bake_breps_with_material_ids(breps, material_ids):
+    if len(breps) != len(material_ids):
+        raise ValueError("There must be one material ID per Brep.")
+
+    palette = [
+        ("Matcha Wolle", (120, 150, 70), 0.90, 1.00),
+        ("Waschbeton", (190, 190, 185), 0.95, 1.00),
+        ("Mid-century Kunststoff", (225, 105, 35), 0.22, 1.00),
+        ("Dunkle Eiche", (65, 38, 25), 0.75, 1.00),
+        ("Milchglas", (155, 205, 220), 0.30, 0.55),
+    ]
+
+    object_ids = []
+
+    for brep, material_id in zip(breps, material_ids):
+        index = int(material_id)
+
+        if index != material_id or index < 0 or index >= len(palette):
+            raise ValueError("Material IDs must be whole numbers from 0 to 4.")
+
+        material_name, rgb, roughness, opacity = palette[index]
+        object_id = bake_brep_with_material(
+            brep, material_name, rgb, roughness, opacity
+        )
+        object_ids.append(object_id)
+
+    return object_ids
+
+def bake_glass_box(brep):
+    """Bake a box Brep with a transparent pale-blue Rhino material."""
+    return bake_brep_with_material(
+        brep,
+        "CDF Clear Glass",
+        (190, 225, 240),
+        roughness=0.08,
+        opacity=0.12
+    )
+
+def bake_composition_with_material_ids(box_brep, sphere_breps, material_ids):
+    """Bake the glass box and all spheres with their selected materials."""
+    if box_brep is None:
+        raise ValueError("box_brep must be provided.")
+    if len(sphere_breps) != len(material_ids):
+        raise ValueError("There must be one material ID per sphere Brep.")
+
+    box_id = bake_glass_box(box_brep)
+    sphere_ids = bake_breps_with_material_ids(sphere_breps, material_ids)
+    return box_id, sphere_ids
