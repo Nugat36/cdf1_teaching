@@ -243,7 +243,7 @@ def pack_gravity_spheres(container_type=0, size=30.0, height=30.0,
         best_point = None
         best_z = float("inf")
 
-        for _ in range(500):
+        for _ in range(250):
             if c_type == 1:
                 angle = rng.uniform(0.0, 2.0 * math.pi)
                 max_center_radius = half - radius
