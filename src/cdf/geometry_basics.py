@@ -362,8 +362,8 @@ def perforate_spheres(planes, radii, seed=42):
     return shapes
 
 def bake_brep_with_material(
-        brep, material_name, rgb, roughness=0.5, opacity=1.0,
-        source_label="brep"):
+        brep, material_name, rgb, roughness, transparency=0.0,
+        reflectivity=0.0, ior=1.52, source_label="brep"):
     import System
     import Rhino
     import Rhino.DocObjects as rd
@@ -375,8 +375,12 @@ def bake_brep_with_material(
         raise ValueError("rgb must contain three values from 0 to 255.")
     if not 0.0 <= roughness <= 1.0:
         raise ValueError("roughness must be between 0.0 and 1.0.")
-    if not 0.0 <= opacity <= 1.0:
-        raise ValueError("opacity must be between 0.0 and 1.0.")
+    if not 0.0 <= transparency <= 1.0:
+        raise ValueError("transparency must be between 0.0 and 1.0.")
+    if not 0.0 <= reflectivity <= 1.0:
+        raise ValueError("reflectivity must be between 0.0 and 1.0.")
+    if ior <= 0.0:
+        raise ValueError("ior must be positive.")
 
     doc = Rhino.RhinoDoc.ActiveDoc
     if doc is None:
@@ -404,7 +408,6 @@ def bake_brep_with_material(
         )
 
     material_index = doc.Materials.Find(material_name, True)
-
     if material_index >= 0:
         material = rd.Material(doc.Materials[material_index])
     else:
@@ -415,15 +418,22 @@ def bake_brep_with_material(
         int(rgb[0]), int(rgb[1]), int(rgb[2])
     )
     material.Shine = (1.0 - roughness) * rd.Material.MaxShine
-    material.Transparency = 1.0 - opacity
+    material.Transparency = transparency
+    material.Reflectivity = reflectivity
+    material.FresnelReflections = True
+    material.IndexOfRefraction = ior
 
     if material_index >= 0:
         if not doc.Materials.Modify(material, material_index, True):
-            raise RuntimeError("Could not update the Rhino material.")
+            raise RuntimeError(
+                "Could not update Rhino material '{}'.".format(material_name)
+            )
     else:
         material_index = doc.Materials.Add(material)
         if material_index < 0:
-            raise RuntimeError("Could not add the Rhino material.")
+            raise RuntimeError(
+                "Could not create Rhino material '{}'.".format(material_name)
+            )
 
     attributes = rd.ObjectAttributes()
     attributes.MaterialSource = rd.ObjectMaterialSource.MaterialFromObject
@@ -440,11 +450,11 @@ def bake_breps_with_material_ids(breps, material_ids):
         raise ValueError("There must be one material ID per Brep.")
 
     palette = [
-        ("Matcha Wolle", (120, 150, 70), 0.90, 1.00),
-        ("Waschbeton", (190, 190, 185), 0.95, 1.00),
-        ("Mid-century Kunststoff", (225, 105, 35), 0.22, 1.00),
-        ("Dunkle Eiche", (65, 38, 25), 0.75, 1.00),
-        ("Milchglas", (155, 205, 220), 0.30, 0.55),
+        ("CDF_Matcha", (120, 150, 70), 0.90, 0.0, 0.0, 1.52),
+        ("CDF_Concrete", (190, 190, 185), 0.95, 0.0, 0.0, 1.52),
+        ("CDF_Orange", (225, 105, 35), 0.22, 0.0, 0.0, 1.52),
+        ("CDF_Metal", (255, 255, 255), 0.0, 0.0, 1.0, 1.52),
+        ("CDF_Glass", (255, 127, 127), 0.0, 0.64, 0.0, 1.52),
     ]
 
     object_ids = []
@@ -456,13 +466,16 @@ def bake_breps_with_material_ids(breps, material_ids):
         if index != material_id or index < 0 or index >= len(palette):
             raise ValueError("Material IDs must be whole numbers from 0 to 4.")
 
-        material_name, rgb, roughness, opacity = palette[index]
+        (material_name, rgb, roughness, transparency,
+         reflectivity, ior) = palette[index]
         object_id = bake_brep_with_material(
             brep,
             material_name,
             rgb,
             roughness,
-            opacity,
+            transparency,
+            reflectivity,
+            ior,
             source_label="sphere_breps[{}]".format(brep_index)
         )
         object_ids.append(object_id)
@@ -470,13 +483,14 @@ def bake_breps_with_material_ids(breps, material_ids):
     return object_ids
 
 def bake_glass_box(brep):
-    """Bake a box Brep with a transparent pale-blue Rhino material."""
+    """Bake the container with a clear standard Rhino material."""
     return bake_brep_with_material(
         brep,
-        "CDF Clear Glass",
-        (190, 225, 240),
-        roughness=0.08,
-        opacity=0.12,
+        "CDF_ContainerGlass",
+        (246, 255, 255),
+        0.0,
+        transparency=1.0,
+        ior=1.52,
         source_label="box_brep"
     )
 
