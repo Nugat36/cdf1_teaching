@@ -204,7 +204,8 @@ def create_hollow_box_container(
         container_type, size, height, wall_thickness)
 
 def pack_gravity_spheres(container_type=0, size=30.0, height=30.0,
-                         count=15, min_radius=2.0, max_radius=5.0, seed=42):
+                         count=15, seed=42,
+                         min_radius=10.0, max_radius=35.0):
     c_type = int(container_type)
     count = int(count)
 
@@ -242,7 +243,7 @@ def pack_gravity_spheres(container_type=0, size=30.0, height=30.0,
         best_point = None
         best_z = float("inf")
 
-        for _ in range(50):
+        for _ in range(500):
             if c_type == 1:
                 angle = rng.uniform(0.0, 2.0 * math.pi)
                 max_center_radius = half - radius
@@ -289,13 +290,16 @@ def perforate_spheres(planes, radii, seed=42):
     shapes = []
     rng = random.Random(seed)
     extra_length = 1.0
+    min_hole_diameter_ratio = 0.25
+    max_hole_diameter_ratio = 0.45
 
     for index, (plane, radius) in enumerate(zip(planes, radii)):
         sphere = create_sphere(plane, radius)
-        if index % 2 == 0:
+        if index % 5 == 0:
             shapes.append(sphere)
             continue
-        hole_diameter_ratio = rng.uniform(0.5, 1.0)
+        hole_diameter_ratio = rng.uniform(
+            min_hole_diameter_ratio, max_hole_diameter_ratio)
 
         angle = rng.uniform(0.0, 2.0 * math.pi)
         direction_z = rng.uniform(-1.0, 1.0)
@@ -307,12 +311,12 @@ def perforate_spheres(planes, radii, seed=42):
                 direction_z
         )
 
-        cutter_radius = radius * hole_diameter_ratio / 2.0
+        cutter_radius = radius * hole_diameter_ratio
         cutter_length = 2.0 * radius + 2.0 * extra_length
         cutter_start = plane.Origin - axis * (radius + extra_length)
         cutter_plane = rg.Plane(cutter_start, axis)
 
-        cutter_type = rng.choice(("cylinder", "box"))
+        cutter_type = rng.choice(("cylinder", "cross"))
 
         if cutter_type == "cylinder":
             cutter_circle = rg.Circle(cutter_plane, cutter_radius)
@@ -321,13 +325,32 @@ def perforate_spheres(planes, radii, seed=42):
                 cutter_length
             ).ToBrep(True, True)
         else:
-            cutter_box = rg.Box(
-                cutter_plane,
-                rg.Interval(-cutter_radius, cutter_radius),
-                rg.Interval(-cutter_radius, cutter_radius),
-                rg.Interval(0.0, cutter_length)
-            )
-            cutter = cutter_box.ToBrep()
+            arm_half_width = cutter_radius * 0.35
+            cross_coordinates = [
+                (-arm_half_width, -cutter_radius),
+                (arm_half_width, -cutter_radius),
+                (arm_half_width, -arm_half_width),
+                (cutter_radius, -arm_half_width),
+                (cutter_radius, arm_half_width),
+                (arm_half_width, arm_half_width),
+                (arm_half_width, cutter_radius),
+                (-arm_half_width, cutter_radius),
+                (-arm_half_width, arm_half_width),
+                (-cutter_radius, arm_half_width),
+                (-cutter_radius, -arm_half_width),
+                (-arm_half_width, -arm_half_width),
+            ]
+            cross_points = [
+                cutter_plane.PointAt(x, y)
+                for x, y in cross_coordinates
+            ]
+            cross_points.append(cross_points[0])
+            cross_curve = rg.PolylineCurve(cross_points)
+            cross_extrusion = rg.Extrusion.Create(
+                cross_curve, cutter_length, True)
+            if cross_extrusion is None:
+                raise RuntimeError("Could not create the cross-shaped cutter.")
+            cutter = cross_extrusion.ToBrep()
 
         result = boolean_difference(sphere, cutter)
 
@@ -339,7 +362,8 @@ def perforate_spheres(planes, radii, seed=42):
     return shapes
 
 def bake_brep_with_material(
-        brep, material_name, rgb, roughness=0.5, opacity=1.0):
+        brep, material_name, rgb, roughness=0.5, opacity=1.0,
+        source_label="brep"):
     import System
     import Rhino
     import Rhino.DocObjects as rd
@@ -357,6 +381,27 @@ def bake_brep_with_material(
     doc = Rhino.RhinoDoc.ActiveDoc
     if doc is None:
         raise RuntimeError("No active Rhino document.")
+
+    if isinstance(brep, System.Guid):
+        source_object = doc.Objects.FindId(brep)
+        if source_object is None:
+            raise ValueError(
+                "{} is a Rhino object ID that does not exist in the active "
+                "document.".format(source_label)
+            )
+        source_geometry = source_object.Geometry
+        if not isinstance(source_geometry, rg.Brep):
+            raise TypeError(
+                "{} is a Rhino object ID, but the object is not a Brep."
+                .format(source_label)
+            )
+        brep = source_geometry.DuplicateBrep()
+
+    if not isinstance(brep, rg.Brep):
+        raise TypeError(
+            "{} must be a Rhino.Geometry.Brep or Rhino object ID; received {}."
+            .format(source_label, type(brep).__name__)
+        )
 
     material_index = doc.Materials.Find(material_name, True)
 
@@ -404,7 +449,8 @@ def bake_breps_with_material_ids(breps, material_ids):
 
     object_ids = []
 
-    for brep, material_id in zip(breps, material_ids):
+    for brep_index, (brep, material_id) in enumerate(
+            zip(breps, material_ids)):
         index = int(material_id)
 
         if index != material_id or index < 0 or index >= len(palette):
@@ -412,7 +458,12 @@ def bake_breps_with_material_ids(breps, material_ids):
 
         material_name, rgb, roughness, opacity = palette[index]
         object_id = bake_brep_with_material(
-            brep, material_name, rgb, roughness, opacity
+            brep,
+            material_name,
+            rgb,
+            roughness,
+            opacity,
+            source_label="sphere_breps[{}]".format(brep_index)
         )
         object_ids.append(object_id)
 
@@ -425,7 +476,8 @@ def bake_glass_box(brep):
         "CDF Clear Glass",
         (190, 225, 240),
         roughness=0.08,
-        opacity=0.12
+        opacity=0.12,
+        source_label="box_brep"
     )
 
 def bake_composition_with_material_ids(box_brep, sphere_breps, material_ids):
@@ -438,3 +490,25 @@ def bake_composition_with_material_ids(box_brep, sphere_breps, material_ids):
     box_id = bake_glass_box(box_brep)
     sphere_ids = bake_breps_with_material_ids(sphere_breps, material_ids)
     return box_id, sphere_ids
+
+def bake_composition_on_button(
+        box_brep, sphere_breps, material_ids, bake):
+    """Bake the glass container and spheres only when the button is pressed."""
+    if not bake:
+        return None
+
+    return bake_composition_with_material_ids(
+        box_brep, sphere_breps, material_ids)
+
+
+def bake_composition_from_parameters_on_button(
+        container_type, size, height, wall_thickness,
+        sphere_breps, material_ids, bake):
+    """Create and bake the glass container and spheres when requested."""
+    if not bake:
+        return None
+
+    box_brep = create_hollow_container(
+        container_type, size, height, wall_thickness)
+    return bake_composition_with_material_ids(
+        box_brep, sphere_breps, material_ids)
