@@ -907,3 +907,300 @@ def ps_cor_end(anchor_point, base_chain, first_round, increase, rounds):
     mesh.Normals.ComputeNormals()
     mesh.Compact()
     return mesh
+
+
+
+
+
+
+
+
+
+
+##Floor pattern
+
+import math
+
+import Rhino.Geometry as rg
+
+
+TILE_SIZE = 1.0
+_NORTH = 1
+_EAST = 2
+_SOUTH = 4
+_WEST = 8
+_DIRECTIONS = (
+    (_NORTH, 0, 1),
+    (_EAST, 1, 0),
+    (_SOUTH, 0, -1),
+    (_WEST, -1, 0),
+)
+
+
+def _point(x, y):
+    return rg.Point3d(x, y, 0.0)
+
+
+def _make_outer_tile():
+    inner_radius = TILE_SIZE / 3.0
+    outer_radius = 2.0 * TILE_SIZE / 3.0
+    interval = rg.Interval(0.0, math.pi / 2.0)
+    lower_left_plane = rg.Plane(_point(-0.5, -0.5), rg.Vector3d.ZAxis)
+    upper_right_plane = rg.Plane(
+        _point(0.5, 0.5),
+        rg.Vector3d(-1.0, 0.0, 0.0),
+        rg.Vector3d(0.0, -1.0, 0.0),
+    )
+    curves = []
+    for plane in (lower_left_plane, upper_right_plane):
+        for radius in (inner_radius, outer_radius):
+            arc = rg.Arc(rg.Circle(plane, radius), interval)
+            curves.append(arc.ToNurbsCurve())
+    return curves
+
+
+def _make_straight_corridor(vertical):
+    half = TILE_SIZE / 2.0
+    offset = TILE_SIZE / 6.0
+    if vertical:
+        curves = [
+            rg.LineCurve(_point(-offset, -half), _point(-offset, half)),
+            rg.LineCurve(_point(offset, -half), _point(offset, half)),
+        ]
+        boundary = rg.PolylineCurve(
+            [
+                _point(-offset, -half), _point(offset, -half),
+                _point(offset, half), _point(-offset, half),
+                _point(-offset, -half),
+            ]
+        )
+    else:
+        curves = [
+            rg.LineCurve(_point(-half, -offset), _point(half, -offset)),
+            rg.LineCurve(_point(-half, offset), _point(half, offset)),
+        ]
+        boundary = rg.PolylineCurve(
+            [
+                _point(-half, -offset), _point(-half, offset),
+                _point(half, offset), _point(half, -offset),
+                _point(-half, -offset),
+            ]
+        )
+    breps = rg.Brep.CreatePlanarBreps([boundary], 1e-9)
+    if breps is None or len(breps) != 1:
+        return curves, None
+    return curves, breps[0]
+
+
+def _make_turn(rotation_index, tolerance):
+    center = _point(-TILE_SIZE / 2.0, -TILE_SIZE / 2.0)
+    plane = rg.Plane(center, rg.Vector3d.ZAxis)
+    interval = rg.Interval(0.0, math.pi / 2.0)
+    inner_arc = rg.Arc(rg.Circle(plane, TILE_SIZE / 3.0), interval)
+    outer_arc = rg.Arc(rg.Circle(plane, 2.0 * TILE_SIZE / 3.0), interval)
+    curves = [inner_arc.ToNurbsCurve(), outer_arc.ToNurbsCurve()]
+    region_curves = [
+        curves[0].DuplicateCurve(),
+        rg.LineCurve(inner_arc.EndPoint, outer_arc.EndPoint),
+        curves[1].DuplicateCurve(),
+        rg.LineCurve(outer_arc.StartPoint, inner_arc.StartPoint),
+    ]
+    rotation = rg.Transform.Rotation(
+        rotation_index * math.pi / 2.0,
+        rg.Vector3d.ZAxis,
+        rg.Point3d.Origin,
+    )
+    for curve in curves + region_curves:
+        if not curve.Transform(rotation):
+            return [], None
+    joined = rg.Curve.JoinCurves(region_curves, tolerance)
+    if joined is None or len(joined) != 1 or not joined[0].IsClosed:
+        return [], None
+    breps = rg.Brep.CreatePlanarBreps([joined[0]], tolerance)
+    if breps is None or len(breps) != 1:
+        return [], None
+    return curves, breps[0]
+
+
+def _grid_cell(point):
+    return int(math.floor(point.X / TILE_SIZE)), int(math.floor(point.Y / TILE_SIZE))
+
+
+def _add_sample_transition(cells, start, end):
+    i0, j0 = start
+    i1, j1 = end
+    steps = max(abs(i1 - i0), abs(j1 - j0), 1)
+    previous = start
+    for step in range(1, steps + 1):
+        ratio = float(step) / steps
+        current = (
+            int(round(i0 + (i1 - i0) * ratio)),
+            int(round(j0 + (j1 - j0) * ratio)),
+        )
+        pi, pj = previous
+        ci, cj = current
+        if abs(ci - pi) == 1 and abs(cj - pj) == 1:
+            intermediate = (ci, pj)
+            cells.add(intermediate)
+            previous = intermediate
+        cells.add(current)
+        previous = current
+
+
+def _sample_path(curve, cols, rows):
+    cells = set()
+    if curve is None:
+        return cells
+    length = curve.GetLength()
+    sample_count = max(1, int(math.ceil(length / 0.1)))
+    previous = None
+    for index in range(sample_count + 1):
+        success, parameter = curve.LengthParameter(
+            length * index / sample_count
+        )
+        if not success:
+            return cells
+        cell = _grid_cell(curve.PointAt(parameter))
+        if not (0 <= cell[0] < cols and 0 <= cell[1] < rows):
+            previous = None
+            continue
+        if previous is not None:
+            _add_sample_transition(cells, previous, cell)
+        cells.add(cell)
+        previous = cell
+    return cells
+
+
+def _expand_cells(cells, cols, rows, corridor_width):
+    extra = max(0, int(math.ceil(corridor_width - 0.5)))
+    if extra == 0:
+        return cells
+    expanded = set(cells)
+    for i, j in cells:
+        for di in range(-extra, extra + 1):
+            for dj in range(-extra, extra + 1):
+                if math.hypot(di, dj) <= extra and 0 <= i + di < cols and 0 <= j + dj < rows:
+                    expanded.add((i + di, j + dj))
+    return expanded
+
+
+def _cell_mask(cell, cells):
+    i, j = cell
+    mask = 0
+    for direction, di, dj in _DIRECTIONS:
+        if (i + di, j + dj) in cells:
+            mask |= direction
+    return mask
+
+
+def _transform_geometry(geometry, translation, rotation=None):
+    if isinstance(geometry, rg.Curve):
+        result = geometry.DuplicateCurve()
+    else:
+        result = geometry.DuplicateBrep()
+    if rotation is not None and not result.Transform(rotation):
+        return None
+    if not result.Transform(translation):
+        return None
+    return result
+
+
+def _corridor_tile(mask, tolerance):
+    directions = [direction for direction, _, _ in _DIRECTIONS if mask & direction]
+    if len(directions) > 2:
+        return None
+    if len(directions) == 1:
+        curves, surface = _make_straight_corridor(
+            directions[0] in (_NORTH, _SOUTH)
+        )
+        return curves, [surface] if surface is not None else []
+
+    if mask == (_NORTH | _SOUTH):
+        curves, surface = _make_straight_corridor(True)
+        return curves, [surface] if surface is not None else []
+    if mask == (_EAST | _WEST):
+        curves, surface = _make_straight_corridor(False)
+        return curves, [surface] if surface is not None else []
+
+    turn_rotations = {
+        _SOUTH | _WEST: 0,
+        _EAST | _SOUTH: 1,
+        _NORTH | _EAST: 2,
+        _NORTH | _WEST: 3,
+    }
+    if mask in turn_rotations:
+        curves, surface = _make_turn(turn_rotations[mask], tolerance)
+        return curves, [surface] if surface is not None else []
+    return None
+
+
+def generate_floor(cols, rows, attractor_curve, corridor_width=0.5):
+    if not isinstance(cols, int) or isinstance(cols, bool) or cols <= 0:
+        return [], [], []
+    if not isinstance(rows, int) or isinstance(rows, bool) or rows <= 0:
+        return [], [], []
+    if not math.isfinite(corridor_width) or corridor_width < 0.0:
+        return [], [], []
+    if attractor_curve is not None and (
+        not isinstance(attractor_curve, rg.Curve) or not attractor_curve.IsValid
+    ):
+        return [], [], []
+
+    tolerance = 1e-8
+    corridor_cells = _expand_cells(
+        _sample_path(attractor_curve, cols, rows),
+        cols,
+        rows,
+        corridor_width,
+    )
+    tile_borders = []
+    pattern_curves = []
+    corridor_parts = []
+
+    for j in range(rows):
+        for i in range(cols):
+            center = rg.Point3d(i + 0.5, j + 0.5, 0.0)
+            border = rg.Rectangle3d(
+                rg.Plane(center, rg.Vector3d.ZAxis),
+                rg.Interval(-TILE_SIZE / 2.0, TILE_SIZE / 2.0),
+                rg.Interval(-TILE_SIZE / 2.0, TILE_SIZE / 2.0),
+            )
+            tile_borders.append(border)
+            rotation_index = ((i * 73856093) ^ (j * 19349663)) % 4
+            translation = rg.Transform.Translation(
+                rg.Vector3d(center.X, center.Y, 0.0)
+            )
+            if (i, j) in corridor_cells:
+                mask = _cell_mask((i, j), corridor_cells)
+                if mask:
+                    tile = _corridor_tile(mask, tolerance)
+                    if tile is not None:
+                        local_curves, local_surfaces = tile
+                        corridor_parts.extend(
+                            transformed
+                            for surface in local_surfaces
+                            for transformed in [_transform_geometry(surface, translation)]
+                            if transformed is not None
+                        )
+                        pattern_curves.extend(
+                            transformed
+                            for curve in local_curves
+                            for transformed in [_transform_geometry(curve, translation)]
+                            if transformed is not None
+                        )
+                        continue
+            rotation = rg.Transform.Rotation(
+                rotation_index * math.pi / 2.0,
+                rg.Vector3d.ZAxis,
+                rg.Point3d.Origin,
+            )
+            pattern_curves.extend(
+                transformed
+                for curve in _make_outer_tile()
+                for transformed in [
+                    _transform_geometry(curve, translation, rotation)
+                ]
+                if transformed is not None
+            )
+
+    return tile_borders, pattern_curves, corridor_parts
